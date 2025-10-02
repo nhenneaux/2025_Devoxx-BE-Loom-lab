@@ -1,6 +1,6 @@
 package org.paumard.server.company.model;
 
-import io.helidon.config.Config;
+import io.helidon.common.config.Config;
 import io.helidon.http.media.MediaContext;
 import io.helidon.http.media.jsonb.JsonbSupport;
 import io.helidon.http.media.jsonp.JsonpSupport;
