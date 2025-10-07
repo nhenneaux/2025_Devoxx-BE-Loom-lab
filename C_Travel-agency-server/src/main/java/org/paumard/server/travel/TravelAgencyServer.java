@@ -34,6 +34,7 @@ import java.util.concurrent.StructuredTaskScope;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+@SuppressWarnings("preview")
 public class TravelAgencyServer {
 
     public record TravelRequest(String from, String to) {}
@@ -48,10 +49,9 @@ public class TravelAgencyServer {
     }
 
     static Callable<CompanyResponse>
-    companyQuery(ClientUri clientURI, Company company, QueryFlight flight) {
+    companyQuery(WebClient companyClient, Company company, QueryFlight flight) {
         return () -> {
-            try (var response = WebClient.builder()
-                    .baseUri(clientURI).build()
+            try (var response = companyClient
                     .post("/company/" + company.tag())
                     .submit(flight)) {
 
@@ -75,10 +75,9 @@ public class TravelAgencyServer {
     }
 
     static Callable<WeatherResponse>
-    weatherQuery(ClientUri clientURI, WeatherAgency agency, City city) {
+    weatherQuery(WebClient weatherClient, WeatherAgency agency, City city) {
         return () -> {
-            try (var response = WebClient.builder()
-                    .baseUri(clientURI).build()
+            try (var response = weatherClient
                     .post("/weather/" + agency.tag())
                     .submit(city)) {
                 if (response.status() == Status.OK_200) {
@@ -92,46 +91,28 @@ public class TravelAgencyServer {
     }
 
     static CompanyResponse
-    queryCompanyServer(ClientUri COMPANY_SERVER_URI, QueryFlight queryFlight) {
+    queryCompanyServer(ClientUri clientURI, QueryFlight queryFlight) {
         try (var companyScope =
                      StructuredTaskScope.<CompanyResponse, Void>open(
                              StructuredTaskScope.Joiner.awaitAll())) {
-            record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
-
+            WebClient companyClient = WebClient.builder()
+                    .baseUri(clientURI).build();
             var companySubtasks = Companies.companies()
                     .stream()
-                    .map(company -> new CompanyTask(
-                            company,
-                            companyScope.fork(companyQuery(COMPANY_SERVER_URI, company, queryFlight))))
+                    .map(company ->
+                            companyScope.fork(companyQuery(companyClient, company, queryFlight)))
                     .toList();
 
             companyScope.join();
 
-            var map = companySubtasks.stream()
-                    .collect(
-                            Collectors.partitioningBy(
-                                    e -> e.task().state() == StructuredTaskScope.Subtask.State.SUCCESS &&
-                                         e.task().get() instanceof CompanyResponse.Priced
-                            )
-                    );
-
-            var companyPricedTravels =
-                    map.get(true).stream()
-                            .map(CompanyTask::task)
-                            .map(StructuredTaskScope.Subtask::get)
-                            .map(CompanyResponse.Priced.class::cast)
-                            .toList();
-
-            var errorCompanies =
-                    map.get(false).stream()
-                            .map(CompanyTask::company)
-                            .toList();
-            // FIXME: best flight
-            var bestFlightOpt = companyPricedTravels.stream()
+            var bestFlightOpt = companySubtasks.stream()
+                    .filter(task -> task.state() == StructuredTaskScope.Subtask.State.SUCCESS)
+                    .map(StructuredTaskScope.Subtask::get)
+                    .filter(CompanyResponse.Priced.class::isInstance)
+                    .map(CompanyResponse.Priced.class::cast)
                     .min(Comparator.comparingInt(CompanyResponse.Priced::price));
             if (bestFlightOpt.isPresent()) {
-                var bestFlight = bestFlightOpt.orElseThrow();
-                return bestFlight;
+                return bestFlightOpt.orElseThrow();
             } else {
                 return new CompanyResponse.NoFlightFromAnyCompany("No Flight found");
             }
@@ -141,19 +122,15 @@ public class TravelAgencyServer {
     }
 
     static WeatherResponse
-    queryWeatherServer(ClientUri WEATHER_SERVER_URI, City destinationCity)
+    queryWeatherServer(ClientUri weatherServerUri, City destinationCity)
             throws InterruptedException {
         try (var weatherScope = StructuredTaskScope.<WeatherResponse, WeatherResponse>open(
                 StructuredTaskScope.Joiner.anySuccessfulResultOrThrow())) {
-
-            var weatherSubtasks = WeatherAgencies.weatherAgencies()
-                    .stream()
-                    .map(weatherAgency ->
-                            weatherScope.fork(
-                                    weatherQuery(WEATHER_SERVER_URI, weatherAgency, destinationCity)))
-                    .toList();
-            var weatherResponse = weatherScope.join();
-            return weatherResponse;
+            WebClient weatherClient = WebClient.builder()
+                    .baseUri(weatherServerUri).build();
+            WeatherAgencies.weatherAgencies()
+                    .forEach(weatherAgency -> weatherScope.fork(weatherQuery(weatherClient, weatherAgency, destinationCity)));
+            return weatherScope.join();
         }
     }
 
@@ -273,7 +250,10 @@ public class TravelAgencyServer {
                 .build();
 
         webServer.start();
-        while (true) {
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 

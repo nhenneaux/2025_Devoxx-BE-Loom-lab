@@ -58,7 +58,10 @@ public class WeatherServer {
 
         webServer.start();
 
-        while (true) {
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 
