@@ -97,19 +97,38 @@ public class TravelAgencyServer {
                              StructuredTaskScope.Joiner.awaitAll())) {
             WebClient companyClient = WebClient.builder()
                     .baseUri(clientURI).build();
+            record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
+
             var companySubtasks = Companies.companies()
                     .stream()
-                    .map(company ->
-                            companyScope.fork(companyQuery(companyClient, company, queryFlight)))
+                    .map(company -> new CompanyTask(
+                            company,
+                            companyScope.fork(companyQuery(companyClient, company, queryFlight))))
                     .toList();
 
             companyScope.join();
 
-            var bestFlightOpt = companySubtasks.stream()
-                    .filter(task -> task.state() == StructuredTaskScope.Subtask.State.SUCCESS)
-                    .map(StructuredTaskScope.Subtask::get)
-                    .filter(CompanyResponse.Priced.class::isInstance)
-                    .map(CompanyResponse.Priced.class::cast)
+            var map = companySubtasks.stream()
+                    .collect(
+                            Collectors.partitioningBy(
+                                    e -> e.task().state() == StructuredTaskScope.Subtask.State.SUCCESS &&
+                                         e.task().get() instanceof CompanyResponse.Priced
+                            )
+                    );
+
+            var companyPricedTravels =
+                    map.get(true).stream()
+                            .map(CompanyTask::task)
+                            .map(StructuredTaskScope.Subtask::get)
+                            .map(CompanyResponse.Priced.class::cast)
+                            .toList();
+
+            var errorCompanies =
+                    map.get(false).stream()
+                            .map(CompanyTask::company)
+                            .toList();
+            // FIXME: best flight
+            var bestFlightOpt = companyPricedTravels.stream()
                     .min(Comparator.comparingInt(CompanyResponse.Priced::price));
             if (bestFlightOpt.isPresent()) {
                 return bestFlightOpt.orElseThrow();
